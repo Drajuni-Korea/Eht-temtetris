@@ -104,35 +104,112 @@ function isEffectiveBlue(r,g,b){
   return h>=175 && h<=225 && s>=0.28 && v>=0.30 && b>=r*1.08;
 }
 
-async function makeBlueOptionMask(filePath){
+async function findBlueOptionLines(filePath){
   const { data, info } = await sharp(filePath)
     .removeAlpha()
     .raw()
     .toBuffer({ resolveWithObject:true });
 
-  const out = Buffer.alloc(info.width * info.height);
-  const ch = info.channels;
-  for(let p=0, j=0; p<data.length; p+=ch, j++){
-    const r=data[p], g=data[p+1], b=data[p+2];
-    out[j] = isEffectiveBlue(r,g,b) ? 0 : 255;
+  const w=info.width, h=info.height, ch=info.channels;
+  const x0=Math.floor(w*0.12), x1=Math.floor(w*0.90);
+  const y0=Math.floor(h*0.28), y1=Math.floor(h*0.62);
+  const rowCounts=new Uint32Array(h);
+
+  // 화면 중앙의 옵션 패널 범위에서만 파란 글자 픽셀을 센다.
+  for(let y=y0;y<y1;y++){
+    let c=0;
+    for(let x=x0;x<x1;x+=2){
+      const p=(y*w+x)*ch;
+      if(isEffectiveBlue(data[p],data[p+1],data[p+2])) c++;
+    }
+    rowCounts[y]=c;
   }
 
-  // 작은 게임 글씨를 OCR이 읽기 쉽게 2배 확대.
+  // 파란 텍스트가 실제로 존재하는 수평 밴드만 묶는다.
+  const minPixels=Math.max(8,Math.floor((x1-x0)*0.008));
+  const ys=[];
+  for(let y=y0;y<y1;y++) if(rowCounts[y]>=minPixels) ys.push(y);
+
+  const groups=[];
+  if(ys.length){
+    let a=ys[0], prev=ys[0];
+    for(let i=1;i<ys.length;i++){
+      const y=ys[i];
+      if(y-prev>4){
+        if(prev-a>=5) groups.push([a,prev]);
+        a=y;
+      }
+      prev=y;
+    }
+    if(prev-a>=5) groups.push([a,prev]);
+  }
+
+  // 너무 위/아래의 잡음이나 아이콘은 제거하고, 텍스트 줄 크기만 채택.
+  return groups
+    .filter(([a,b])=>{
+      const height=b-a+1;
+      return height>=8 && height<=Math.max(80,Math.floor(h*0.04));
+    })
+    .map(([a,b])=>({
+      x:Math.max(0,x0-Math.floor(w*0.01)),
+      y:Math.max(0,a-Math.floor(h*0.006)),
+      width:Math.min(w, x1-x0+Math.floor(w*0.02)),
+      height:Math.min(h-a, b-a+1+Math.floor(h*0.012))
+    }))
+    .slice(0,8);
+}
+
+async function makeBlueLineMask(filePath,rect){
+  const { data, info } = await sharp(filePath)
+    .extract({left:rect.x,top:rect.y,width:rect.width,height:rect.height})
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject:true });
+
+  const out=Buffer.alloc(info.width*info.height);
+  const ch=info.channels;
+  for(let p=0,j=0;p<data.length;p+=ch,j++){
+    out[j]=isEffectiveBlue(data[p],data[p+1],data[p+2])?0:255;
+  }
+
   return sharp(out,{raw:{width:info.width,height:info.height,channels:1}})
-    .resize({width:info.width*2,height:info.height*2,kernel:'nearest'})
+    .resize({width:info.width*3,height:info.height*3,kernel:'nearest'})
+    .extend({top:24,bottom:24,left:36,right:36,background:255})
     .png()
     .toBuffer();
 }
 
 async function recognizeBlueOptions(worker,filePath){
-  const mask = await makeBlueOptionMask(filePath);
-  const { data:{ text, confidence } } = await worker.recognize(mask);
-  const blueText = normalizeOCR(text);
-  const found = [];
-  for(const [key,re] of patterns){
-    if(re.test(blueText) && !found.includes(key)) found.push(key);
+  const rects=await findBlueOptionLines(filePath);
+  const found=[];
+  const lines=[];
+  const confidences=[];
+
+  // 한 줄씩 따로 OCR한다. 상단 흰색 방어력 등은 이 단계에 들어오지 않는다.
+  await worker.setParameters({tessedit_pageseg_mode:'7'});
+  try{
+    for(const rect of rects){
+      const mask=await makeBlueLineMask(filePath,rect);
+      const {data:{text,confidence}}=await worker.recognize(mask);
+      const line=normalizeOCR(text);
+      if(line) lines.push(line);
+      confidences.push(Number(confidence||0));
+
+      for(const [key,re] of patterns){
+        if(re.test(line) && !found.includes(key)) found.push(key);
+      }
+    }
+  }finally{
+    await worker.setParameters({tessedit_pageseg_mode:'3'});
   }
-  return { blueText, found, confidence:Number(confidence||0) };
+
+  return {
+    blueText:lines.join(' | '),
+    blueLines:lines,
+    blueLineCount:rects.length,
+    found,
+    confidence:confidences.length ? confidences.reduce((a,b)=>a+b,0)/confidences.length : 0
+  };
 }
 
 function detectSpecial(txt, slot) {
@@ -301,6 +378,8 @@ async function processJob(job){
             opts:opts.slice(0,4),
             found,
             blueText:blue.blueText,
+            blueLines:blue.blueLines,
+            blueLineCount:blue.blueLineCount,
             blueConfidence:blue.confidence,
             baseConfidence:Number(baseConfidence||0),
             slotCandidates:slotHits,
