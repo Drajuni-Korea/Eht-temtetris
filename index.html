@@ -24,7 +24,7 @@ label span{display:block;font-size:12px;color:var(--muted);margin-bottom:5px}sel
 </style>
 </head>
 <body><div class="app">
-<div class="top"><div><div class="title">EHT 템트리스</div><div class="sub">캡처 자동등록 · IndexedDB 영구저장 · 역할별 계산 · 8부위 최적 조합</div></div><span class="pill">v4</span></div>
+<div class="top"><div><div class="title">EHT 템트리스</div><div class="sub">서버 OCR · 앱 전환 후에도 처리 · IndexedDB 영구저장 · 역할별 계산</div></div><span class="pill">v4</span></div>
 <div class="tabs">
 <button data-tab="scan" class="active">캡처등록</button><button data-tab="inv">보유장비</button><button data-tab="calc">계산</button><button data-tab="best">최적조합</button>
 </div>
@@ -85,48 +85,98 @@ function normalizeOCR(s){return s.replace(/\s+/g,' ').replace(/[|]/g,' ')}
 const patterns=[['atkspd',/공격\s*속도/],['critdmg',/치명타\s*피해량|치명타\s*피해/],['crit',/치명타\s*확률/],['eva',/회피/],['dmgred',/데미지.*감소|받는.*데미지.*감소/],['leech',/흡혈/],['movespd',/이동\s*속도/],['atk',/전체\s*공격력|공격력/],['def',/전체\s*방어력|방어력/],['hp',/체력/],['boss',/보스류/],['human',/영장류/],['undead',/언데드/],['demon',/악마류/],['animal',/동물류/],['exp',/경험치/],['gold',/골드/],['material',/재료/],['hunger',/허기/],['mood',/기분/],['stamina',/기력/]];
 async function runOCR(file){$('ocrStatus').textContent='OCR 분석 중...';const url=URL.createObjectURL(file);$('preview').src=url;$('preview').style.display='block';try{const r=await Tesseract.recognize(file,'kor+eng',{logger:m=>{if(m.status==='recognizing text')$('ocrStatus').textContent=`OCR ${(m.progress*100|0)}%`}});const txt=normalizeOCR(r.data.text);let found=[];patterns.forEach(([k,re])=>{if(re.test(txt)&&!found.includes(k))found.push(k)});if(/심연/.test(txt))$('scanTier').value='abyss';else if(/혼돈/.test(txt))$('scanTier').value='chaos';else if(/태초/.test(txt))$('scanTier').value='origin';const slotMap=[['gloves',/장갑류|장갑/],['boots',/신발류|경갑|부츠/],['helmet',/투구류|투구|헬름|모자/],['armor',/갑옷류|갑옷|흉갑/],['belt',/벨트류|벨트|허리띠/],['ring',/반지류|링/],['necklace',/목걸이류|목걸이/],['weapon',/무기류|검|활|지팡이|도끼/]];for(const [s,re] of slotMap){if(re.test(txt)){$('scanSlot').value=s;refreshSpecial();break}}
 const blueish=found.slice(0,4);['so1','so2','so3','so4'].forEach((id,i)=>{if(blueish[i]&&[...$(id).options].some(o=>o.value===blueish[i]))$(id).value=blueish[i]});$('ocrStatus').innerHTML=`인식 완료: <span class="good">${found.map(x=>names[x]).join(', ')||'옵션 미검출'}</span><br>색상 필터는 휴리스틱이라 등록 전에 4옵션을 확인해 주세요.`}catch(err){$('ocrStatus').innerHTML=`<span class="bad">OCR 실패</span> · 수동 선택으로 등록할 수 있습니다.`}}
-$('imgInput').onchange=async e=>{
-  const files=[...e.target.files];
-  if(!files.length)return;
 
-  let ok=0, pending=0;
-  for(let i=0;i<files.length;i++){
-    const file=files[i];
-
-    // 이전 사진의 인식값이 다음 사진으로 섞이지 않도록 초기화
-    ['so1','so2','so3','so4'].forEach(id=>$(id).value='');
-    $('scanSpecial').value=(specialBySlot[$('scanSlot').value]||[['normal','일반']])[0][0];
-
-    $('ocrStatus').innerHTML=`<b>${i+1}/${files.length}</b> · ${file.name}<br>OCR 분석 중…`;
-    await runOCR(file);
-
-    const opts=['so1','so2','so3','so4'].map(id=>$(id).value).filter(Boolean);
-    const fx=fixedSpecial[$('scanSpecial').value]||[];
-    const merged=[...new Set([...fx,...opts])].slice(0,4);
-
-    if(merged.length===4){
-      const item={
-        id:nextId++,
-        slot:$('scanSlot').value,
-        tier:$('scanTier').value,
-        special:$('scanSpecial').value,
-        opts:merged,
-        createdAt:new Date().toISOString(),
-        sourceName:file.name
-      };
-      await saveItem(item);
-      ok++;
+let serverFailedScans=[];let manualServerFailId=null;
+const JOB_KEY='ehtActiveOcrJob';
+function ensureServerUI(){
+  if(!$('serverStatus')){
+    const d=document.createElement('div');d.id='serverStatus';d.className='status';d.style.marginTop='8px';
+    d.textContent='서버 연결 확인 중…';$('ocrStatus').insertAdjacentElement('afterend',d);
+  }
+  if(!$('serverFailedBox')){
+    const box=document.createElement('div');box.id='serverFailedBox';box.className='box';box.style.display='none';
+    box.innerHTML='<div class="row" style="justify-content:space-between"><div><h3 style="margin-bottom:2px">확인 필요</h3><div class="mini">자동 등록되지 않은 장비만 표시합니다.</div></div><span id="serverFailedCount" class="pill">0개</span></div><div id="serverFailedList" style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin-top:10px"></div>';
+    document.querySelector('#scan .box')?.insertAdjacentElement('afterend',box);
+  }
+}
+function setServerManualForm(d){
+  if(d.slot){$('scanSlot').value=d.slot;refreshSpecial()}
+  if(d.tier)$('scanTier').value=d.tier;
+  if(d.special&&[...$('scanSpecial').options].some(o=>o.value===d.special))$('scanSpecial').value=d.special;
+  const vals=(d.opts||[]).slice(0,4);['so1','so2','so3','so4'].forEach((id,i)=>{if(vals[i]&&[...$(id).options].some(o=>o.value===vals[i]))$(id).value=vals[i];else $(id).value=''});
+}
+function renderServerFailed(){
+  ensureServerUI();
+  $('serverFailedCount').textContent=serverFailedScans.length+'개';
+  $('serverFailedBox').style.display=serverFailedScans.length?'block':'none';
+  $('serverFailedList').innerHTML=serverFailedScans.map(f=>'<div class="item"><img src="'+f.imageUrl+'" style="width:100%;height:160px;object-fit:contain;border-radius:10px;background:#090b0f;border:1px solid var(--line);margin-bottom:8px"><b>'+f.name+'</b><div class="mini" style="margin-top:4px">'+f.reason+'</div><div class="opts">'+((f.data?.opts||[]).map(x=>names[x]||x).join(' / ')||'인식 옵션 없음')+'</div><button class="btn sec" style="width:100%;margin-top:8px" data-server-manual="'+f.index+'">수동 등록</button></div>').join('');
+  document.querySelectorAll('[data-server-manual]').forEach(b=>b.onclick=()=>{
+    const f=serverFailedScans.find(x=>String(x.index)===String(b.dataset.serverManual));if(!f)return;
+    manualServerFailId=f.index;setServerManualForm(f.data||{});
+    $('preview').src=f.imageUrl;$('preview').style.display='block';
+    $('ocrStatus').innerHTML='<span class="warn">수동 등록 중:</span> '+f.name+'<br>인식값을 확인·수정한 뒤 등록 버튼을 누르세요.';
+  });
+}
+async function serverApi(path,opts){const r=await fetch(path,opts);if(!r.ok)throw new Error(await r.text());return r.json()}
+function serverKey(jobId,index){return jobId+':'+index}
+async function applyServerJob(job){
+  let success=0;serverFailedScans=[];
+  for(const r of (job.results||[])){
+    if(!r)continue;
+    const key=serverKey(job.id,r.index);
+    if(r.complete){
+      if(!inventory.some(x=>x.serverKey===key)){
+        const d=r.data||{};
+        const item={id:nextId++,slot:d.slot,tier:d.tier,special:d.special||'normal',opts:d.opts||[],createdAt:new Date().toISOString(),sourceName:r.name,serverKey:key};
+        await saveItem(item);
+      }
+      success++;
     }else{
-      pending++;
+      serverFailedScans.push({index:r.index,name:r.name,imageUrl:r.imageUrl,reason:r.reason||'확인 필요',data:r.data||{}});
     }
   }
-
-  $('ocrStatus').innerHTML=
-    `<span class="good">일괄 처리 완료 · ${ok}개 자동 등록</span>`+
-    (pending? `<br><span class="warn">${pending}개는 옵션 4개를 확정하지 못해 자동 등록하지 않았습니다.</span>`:'');
-  renderInv();
-  showTab('inv');
+  renderServerFailed();
+  $('ocrStatus').innerHTML='처리 완료 · <span class="good">'+success+'개 자동 등록</span> · <span class="warn">'+serverFailedScans.length+'개 확인 필요</span>';
+  localStorage.removeItem(JOB_KEY);
+}
+async function pollServerJob(id){
+  localStorage.setItem(JOB_KEY,id);ensureServerUI();
+  try{
+    const job=await serverApi('/api/jobs/'+id);
+    const done=job.done||0,total=job.total||0;
+    $('serverStatus').innerHTML='서버 OCR 작업 <b>'+done+'/'+total+'</b> · '+job.status;
+    if(job.status==='completed'){await applyServerJob(job);$('serverStatus').innerHTML='<span class="good">서버 작업 완료</span> · 다른 앱으로 이동해도 서버에서 계속 처리됩니다.';return}
+    if(job.status==='failed')throw new Error(job.error||'server job failed');
+    setTimeout(()=>pollServerJob(id),2000);
+  }catch(e){$('serverStatus').innerHTML='<span class="bad">서버 상태 확인 실패</span> · '+e.message;setTimeout(()=>pollServerJob(id),5000)}
+}
+$('imgInput').onchange=async e=>{
+  ensureServerUI();const files=[...e.target.files];if(!files.length)return;
+  const fd=new FormData();files.forEach(f=>fd.append('images',f));
+  $('ocrStatus').textContent=files.length+'개 이미지를 서버로 업로드 중…';
+  $('serverStatus').textContent='업로드가 끝나면 다른 앱으로 이동해도 됩니다.';
+  try{
+    const job=await serverApi('/api/jobs',{method:'POST',body:fd});
+    $('ocrStatus').innerHTML='업로드 완료 · 서버 OCR 시작<br><b>이제 다른 앱으로 이동해도 됩니다.</b>';
+    e.target.value='';pollServerJob(job.id);
+  }catch(err){$('ocrStatus').innerHTML='<span class="bad">서버 업로드 실패</span> · '+err.message}
 };
+const originalRegisterHandler=$('registerBtn').onclick;
+$('registerBtn').onclick=async()=>{
+  const before=inventory.length;
+  await originalRegisterHandler();
+  if(manualServerFailId!==null&&inventory.length>before){
+    serverFailedScans=serverFailedScans.filter(x=>x.index!==manualServerFailId);
+    manualServerFailId=null;renderServerFailed();
+  }
+};
+window.addEventListener('load',async()=>{
+  ensureServerUI();
+  try{await serverApi('/api/health');$('serverStatus').innerHTML='<span class="good">서버 연결됨</span> · 업로드 후 다른 앱으로 이동해도 OCR이 계속됩니다.'}
+  catch{$('serverStatus').innerHTML='<span class="bad">서버 연결 안 됨</span>'}
+  const id=localStorage.getItem(JOB_KEY);if(id){$('ocrStatus').textContent='이전에 시작한 OCR 작업을 복구하는 중…';pollServerJob(id)}
+});
+
 function num(id){const v=Number($(id).value);return Number.isFinite(v)?v:0}function need(target,have,per){return Math.max(0,Math.ceil(Math.max(0,target-have)/per))}
 let currentNeeds={};function calc(){const role=roles[$('role').value],t=tiers[$('tier').value];$('roleDesc').textContent=`${role.desc} · 무기: ${role.weapon.map(x=>x==='colo'?'콜로':x==='world'?'월보':'대악마').join('/')}`;const b=base[$('job').value][$('weaponType').value],known=num('statGrade')+num('personality')+num('secret')+($('union').checked?5:0)+($('pet').checked?12:0)+num('rSpeed'),sf=1+(num('fury')-1)+(num('quicken')-1),req=(1-(0.25*sf/b))*100,spNeed=Math.max(0,req-known),spCount=Math.ceil(spNeed/t.a);const crit=need(50,num('rCrit'),t.a),eva=need(40,num('rEva'),t.a),dmg=$('role').value==='pvpTank'?need(100,num('rDmg'),t.b):0,leech=$('role').value!=='pvpTank'?need(50,num('rLeech'),t.b):0;currentNeeds={atkspd:spCount,crit,eva,dmgred:dmg,leech};$('speedResult').innerHTML=`필요 총 공속 보정 ${Math.max(0,req).toFixed(1)}% · 장비 제외 ${known.toFixed(1)}% · 장비 공속 <b>${spCount}개</b>`;const entries=[['공속',spCount],['치확',crit],['회피',eva]];if(dmg)entries.push(['뎀감',dmg]);if(leech)entries.push(['흡혈',leech]);$('needCards').innerHTML=entries.map(([n,c])=>`<div class="card"><div class="mini">${n}</div><div class="big">${c}개</div></div>`).join('')}
 ['role','tier','rCrit','rEva','rDmg','rLeech','job','weaponType','statGrade','personality','secret','rSpeed','quicken','fury','union','pet'].forEach(id=>$(id).addEventListener('input',calc));calc();
