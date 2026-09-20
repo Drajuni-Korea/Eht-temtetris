@@ -85,7 +85,48 @@ function normalizeOCR(s){return s.replace(/\s+/g,' ').replace(/[|]/g,' ')}
 const patterns=[['atkspd',/공격\s*속도/],['critdmg',/치명타\s*피해량|치명타\s*피해/],['crit',/치명타\s*확률/],['eva',/회피/],['dmgred',/데미지.*감소|받는.*데미지.*감소/],['leech',/흡혈/],['movespd',/이동\s*속도/],['atk',/전체\s*공격력|공격력/],['def',/전체\s*방어력|방어력/],['hp',/체력/],['boss',/보스류/],['human',/영장류/],['undead',/언데드/],['demon',/악마류/],['animal',/동물류/],['exp',/경험치/],['gold',/골드/],['material',/재료/],['hunger',/허기/],['mood',/기분/],['stamina',/기력/]];
 async function runOCR(file){$('ocrStatus').textContent='OCR 분석 중...';const url=URL.createObjectURL(file);$('preview').src=url;$('preview').style.display='block';try{const r=await Tesseract.recognize(file,'kor+eng',{logger:m=>{if(m.status==='recognizing text')$('ocrStatus').textContent=`OCR ${(m.progress*100|0)}%`}});const txt=normalizeOCR(r.data.text);let found=[];patterns.forEach(([k,re])=>{if(re.test(txt)&&!found.includes(k))found.push(k)});if(/심연/.test(txt))$('scanTier').value='abyss';else if(/혼돈/.test(txt))$('scanTier').value='chaos';else if(/태초/.test(txt))$('scanTier').value='origin';const slotMap=[['gloves',/장갑류|장갑/],['boots',/신발류|경갑|부츠/],['helmet',/투구류|투구|헬름|모자/],['armor',/갑옷류|갑옷|흉갑/],['belt',/벨트류|벨트|허리띠/],['ring',/반지류|링/],['necklace',/목걸이류|목걸이/],['weapon',/무기류|검|활|지팡이|도끼/]];for(const [s,re] of slotMap){if(re.test(txt)){$('scanSlot').value=s;refreshSpecial();break}}
 const blueish=found.slice(0,4);['so1','so2','so3','so4'].forEach((id,i)=>{if(blueish[i]&&[...$(id).options].some(o=>o.value===blueish[i]))$(id).value=blueish[i]});$('ocrStatus').innerHTML=`인식 완료: <span class="good">${found.map(x=>names[x]).join(', ')||'옵션 미검출'}</span><br>색상 필터는 휴리스틱이라 등록 전에 4옵션을 확인해 주세요.`}catch(err){$('ocrStatus').innerHTML=`<span class="bad">OCR 실패</span> · 수동 선택으로 등록할 수 있습니다.`}}
-$('imgInput').onchange=async e=>{const files=[...e.target.files];if(files[0])await runOCR(files[0])};
+$('imgInput').onchange=async e=>{
+  const files=[...e.target.files];
+  if(!files.length)return;
+
+  let ok=0, pending=0;
+  for(let i=0;i<files.length;i++){
+    const file=files[i];
+
+    // 이전 사진의 인식값이 다음 사진으로 섞이지 않도록 초기화
+    ['so1','so2','so3','so4'].forEach(id=>$(id).value='');
+    $('scanSpecial').value=(specialBySlot[$('scanSlot').value]||[['normal','일반']])[0][0];
+
+    $('ocrStatus').innerHTML=`<b>${i+1}/${files.length}</b> · ${file.name}<br>OCR 분석 중…`;
+    await runOCR(file);
+
+    const opts=['so1','so2','so3','so4'].map(id=>$(id).value).filter(Boolean);
+    const fx=fixedSpecial[$('scanSpecial').value]||[];
+    const merged=[...new Set([...fx,...opts])].slice(0,4);
+
+    if(merged.length===4){
+      const item={
+        id:nextId++,
+        slot:$('scanSlot').value,
+        tier:$('scanTier').value,
+        special:$('scanSpecial').value,
+        opts:merged,
+        createdAt:new Date().toISOString(),
+        sourceName:file.name
+      };
+      await saveItem(item);
+      ok++;
+    }else{
+      pending++;
+    }
+  }
+
+  $('ocrStatus').innerHTML=
+    `<span class="good">일괄 처리 완료 · ${ok}개 자동 등록</span>`+
+    (pending? `<br><span class="warn">${pending}개는 옵션 4개를 확정하지 못해 자동 등록하지 않았습니다.</span>`:'');
+  renderInv();
+  showTab('inv');
+};
 function num(id){const v=Number($(id).value);return Number.isFinite(v)?v:0}function need(target,have,per){return Math.max(0,Math.ceil(Math.max(0,target-have)/per))}
 let currentNeeds={};function calc(){const role=roles[$('role').value],t=tiers[$('tier').value];$('roleDesc').textContent=`${role.desc} · 무기: ${role.weapon.map(x=>x==='colo'?'콜로':x==='world'?'월보':'대악마').join('/')}`;const b=base[$('job').value][$('weaponType').value],known=num('statGrade')+num('personality')+num('secret')+($('union').checked?5:0)+($('pet').checked?12:0)+num('rSpeed'),sf=1+(num('fury')-1)+(num('quicken')-1),req=(1-(0.25*sf/b))*100,spNeed=Math.max(0,req-known),spCount=Math.ceil(spNeed/t.a);const crit=need(50,num('rCrit'),t.a),eva=need(40,num('rEva'),t.a),dmg=$('role').value==='pvpTank'?need(100,num('rDmg'),t.b):0,leech=$('role').value!=='pvpTank'?need(50,num('rLeech'),t.b):0;currentNeeds={atkspd:spCount,crit,eva,dmgred:dmg,leech};$('speedResult').innerHTML=`필요 총 공속 보정 ${Math.max(0,req).toFixed(1)}% · 장비 제외 ${known.toFixed(1)}% · 장비 공속 <b>${spCount}개</b>`;const entries=[['공속',spCount],['치확',crit],['회피',eva]];if(dmg)entries.push(['뎀감',dmg]);if(leech)entries.push(['흡혈',leech]);$('needCards').innerHTML=entries.map(([n,c])=>`<div class="card"><div class="mini">${n}</div><div class="big">${c}개</div></div>`).join('')}
 ['role','tier','rCrit','rEva','rDmg','rLeech','job','weaponType','statGrade','personality','secret','rSpeed','quicken','fury','union','pet'].forEach(id=>$(id).addEventListener('input',calc));calc();
