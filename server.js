@@ -97,6 +97,44 @@ function normalizeOCR(s='') {
   return s.replace(/\s+/g, ' ').replace(/[|]/g, ' ');
 }
 
+function isEffectiveBlue(r,g,b){
+  const [h,s,v]=rgbToHsv(r,g,b);
+  // EHT 일반 유효 옵션의 청록/파랑 계열만 통과.
+  // 분홍(고정/별도), 빨강(디메리트), 흰/회색 텍스트는 제거한다.
+  return h>=175 && h<=225 && s>=0.28 && v>=0.30 && b>=r*1.08;
+}
+
+async function makeBlueOptionMask(filePath){
+  const { data, info } = await sharp(filePath)
+    .removeAlpha()
+    .raw()
+    .toBuffer({ resolveWithObject:true });
+
+  const out = Buffer.alloc(info.width * info.height);
+  const ch = info.channels;
+  for(let p=0, j=0; p<data.length; p+=ch, j++){
+    const r=data[p], g=data[p+1], b=data[p+2];
+    out[j] = isEffectiveBlue(r,g,b) ? 0 : 255;
+  }
+
+  // 작은 게임 글씨를 OCR이 읽기 쉽게 2배 확대.
+  return sharp(out,{raw:{width:info.width,height:info.height,channels:1}})
+    .resize({width:info.width*2,height:info.height*2,kernel:'nearest'})
+    .png()
+    .toBuffer();
+}
+
+async function recognizeBlueOptions(worker,filePath){
+  const mask = await makeBlueOptionMask(filePath);
+  const { data:{ text, confidence } } = await worker.recognize(mask);
+  const blueText = normalizeOCR(text);
+  const found = [];
+  for(const [key,re] of patterns){
+    if(re.test(blueText) && !found.includes(key)) found.push(key);
+  }
+  return { blueText, found, confidence:Number(confidence||0) };
+}
+
 function detectSpecial(txt, slot) {
   const list = specialBySlot[slot] || [];
   const noSpace = txt.replace(/\s+/g, '');
@@ -207,41 +245,47 @@ async function processJob(job){
       await writeJob(job);
 
       try{
-        const [{ data:{ text } }, cGrade] = await Promise.all([
+        // 1) 장비 기본 정보는 원본 OCR.
+        // 2) 옵션은 반드시 파란색 글자만 남긴 마스크에서 별도 OCR.
+        //    분홍 옵션/빨간 디메리트가 일반 옵션으로 섞이는 것을 막는다.
+        const [{ data:{ text, confidence:baseConfidence } }, cGrade] = await Promise.all([
           worker.recognize(f.path),
           colorGrade(f.path)
         ]);
+        const blue = await recognizeBlueOptions(worker, f.path);
 
         const txt = normalizeOCR(text);
-        const found = [];
+        const found = blue.found;
 
-        for(const [key, re] of patterns){
-          if(re.test(txt) && !found.includes(key)) found.push(key);
-        }
+        const tierHits = [];
+        if(/심연/.test(txt)) tierHits.push('abyss');
+        if(/혼돈/.test(txt)) tierHits.push('chaos');
+        if(/태초/.test(txt)) tierHits.push('origin');
+        const tier = tierHits.length===1 ? tierHits[0] : null;
 
-        let tier = null;
-        if(/심연/.test(txt)) tier = 'abyss';
-        else if(/혼돈/.test(txt)) tier = 'chaos';
-        else if(/태초/.test(txt)) tier = 'origin';
-
-        let slot = null;
+        const slotHits = [];
         for(const [key, re] of slotMap){
-          if(re.test(txt)){
-            slot = key;
-            break;
-          }
+          if(re.test(txt) && !slotHits.includes(key)) slotHits.push(key);
         }
+        const slot = slotHits.length===1 ? slotHits[0] : null;
 
         const special = slot ? detectSpecial(txt, slot) : null;
         const fixed = fixedSpecial[special] || [];
-        const opts = [...new Set([...fixed, ...found])].slice(0,4);
+        const opts = [...new Set([...fixed, ...found])];
         const grade = cGrade || textGrade(txt, tier);
 
-        const complete = !!(slot && tier && opts.length===4);
+        // 자동등록은 보수적으로:
+        // - 부위 1개 확정
+        // - 단계 1개 확정
+        // - 파란 유효옵션(+유니크 고정옵션)이 정확히 4개
+        // 그 외는 전부 확인 필요로 보낸다.
+        const exactFour = opts.length===4;
+        const complete = !!(slot && tier && exactFour);
         const reason = complete ? '' :
-          !slot ? '부위를 인식하지 못함' :
-          !tier ? '장비 단계를 인식하지 못함' :
-          `유효 옵션 ${opts.length}/4개 인식`;
+          !slot ? (slotHits.length>1 ? '부위 후보가 여러 개 인식됨' : '부위를 인식하지 못함') :
+          !tier ? (tierHits.length>1 ? '장비 단계 후보가 여러 개 인식됨' : '장비 단계를 인식하지 못함') :
+          opts.length<4 ? `파란 유효 옵션 ${opts.length}/4개 인식` :
+          `파란 유효 옵션이 ${opts.length}개로 과다 인식됨`;
 
         job.results[i] = {
           index:i,
@@ -254,8 +298,13 @@ async function processJob(job){
             tier,
             special:special || 'normal',
             grade,
-            opts,
-            found
+            opts:opts.slice(0,4),
+            found,
+            blueText:blue.blueText,
+            blueConfidence:blue.confidence,
+            baseConfidence:Number(baseConfidence||0),
+            slotCandidates:slotHits,
+            tierCandidates:tierHits
           }
         };
       }catch{
