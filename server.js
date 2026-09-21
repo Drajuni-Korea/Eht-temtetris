@@ -411,6 +411,11 @@ function detectSpecial(txt, slot) {
     if (key === 'normal') continue;
     if (noSpace.includes(label.replace(/\s+/g, ''))) return key;
   }
+  if(slot==='belt'){
+    if(/진\s*뇌룡|뇌룡.*진/.test(txt)) return 'trueThunder';
+    if(/뇌룡/.test(txt)) return 'thunder';
+    if(/연금술사/.test(txt)) return 'alchemy';
+  }
   if (slot === 'weapon') {
     if (/월드\s*보스/.test(txt)) return 'world';
     if (/콜로/.test(txt)) return 'colo';
@@ -500,6 +505,48 @@ async function readJob(id){
 
 let queue = Promise.resolve();
 
+
+async function recognizeEquipmentHeader(worker,filePath){
+  const meta=await sharp(filePath).metadata();
+  const w=meta.width||1,h=meta.height||1;
+  const left=Math.floor(w*0.16), top=Math.floor(h*0.18);
+  const width=Math.max(1,Math.floor(w*0.68));
+  const height=Math.max(1,Math.floor(h*0.22));
+  const crop=await sharp(filePath)
+    .extract({
+      left,
+      top,
+      width:Math.min(width,w-left),
+      height:Math.min(height,h-top)
+    })
+    .resize({width:Math.max(1,width*3),height:Math.max(1,height*3),kernel:'lanczos3'})
+    .sharpen()
+    .png()
+    .toBuffer();
+
+  await worker.setParameters({tessedit_pageseg_mode:'6'});
+  try{
+    const {data:{text,confidence}}=await worker.recognize(crop);
+    return {text:normalizeOCR(text),confidence:Number(confidence||0)};
+  }finally{
+    await worker.setParameters({tessedit_pageseg_mode:'3'});
+  }
+}
+
+function inferTierFromOptionRanges(lines=[]){
+  const joined=lines.join(' ');
+  const votes={origin:0,chaos:0,abyss:0};
+  const ranges=[...joined.matchAll(/\[(\d+)\s*[~\-]\s*(\d+)\]/g)];
+  for(const m of ranges){
+    const max=Number(m[2]);
+    if([16,21,29,45].includes(max)) votes.abyss++;
+    if([14,19,26,40].includes(max)) votes.chaos++;
+    if([12,17,23,35].includes(max)) votes.origin++;
+  }
+  const ranked=Object.entries(votes).sort((a,b)=>b[1]-a[1]);
+  return ranked[0][1]>0 && (ranked.length<2 || ranked[0][1]>ranked[1][1]) ? ranked[0][0] : null;
+}
+
 async function processJob(job){
   job.status = 'processing';
   job.startedAt = new Date().toISOString();
@@ -522,23 +569,27 @@ async function processJob(job){
           colorGrade(f.path)
         ]);
         const blue = await recognizeBlueOptions(worker, f.path);
+        const header = await recognizeEquipmentHeader(worker, f.path);
 
         const txt = normalizeOCR(text);
+        const combinedText = normalizeOCR(header.text+' '+txt);
         const found = blue.found;
 
         const tierHits = [];
-        if(/심연/.test(txt)) tierHits.push('abyss');
-        if(/혼돈/.test(txt)) tierHits.push('chaos');
-        if(/태초/.test(txt)) tierHits.push('origin');
-        const tier = tierHits.length===1 ? tierHits[0] : null;
+        if(/심연/.test(combinedText)) tierHits.push('abyss');
+        if(/혼돈/.test(combinedText)) tierHits.push('chaos');
+        if(/태초/.test(combinedText)) tierHits.push('origin');
+        const rangeTier=inferTierFromOptionRanges(blue.blueLines);
+        if(rangeTier && !tierHits.includes(rangeTier)) tierHits.push(rangeTier);
+        const tier = tierHits.length===1 ? tierHits[0] : (rangeTier || null);
 
         const slotHits = [];
         for(const [key, re] of slotMap){
-          if(re.test(txt) && !slotHits.includes(key)) slotHits.push(key);
+          if(re.test(combinedText) && !slotHits.includes(key)) slotHits.push(key);
         }
         const slot = slotHits.length===1 ? slotHits[0] : null;
 
-        const special = slot ? detectSpecial(txt, slot) : null;
+        const special = slot ? detectSpecial(combinedText, slot) : null;
         const fixed = fixedSpecial[special] || [];
         const opts = [...new Set([...fixed, ...found])];
         const grade = cGrade || textGrade(txt, tier);
@@ -569,6 +620,8 @@ async function processJob(job){
           blueLines:blue.blueLines,
           decisions:blue.decisions,
           blueConfidence:blue.confidence,
+          headerText:header.text,
+          headerConfidence:header.confidence,
           baseConfidence:Number(baseConfidence||0)
         }));
 
@@ -591,6 +644,8 @@ async function processJob(job){
             blueLineCount:blue.blueLineCount,
             optionDecisions:blue.decisions,
             blueConfidence:blue.confidence,
+            headerText:header.text,
+            headerConfidence:header.confidence,
             baseConfidence:Number(baseConfidence||0),
             slotCandidates:slotHits,
             tierCandidates:tierHits
