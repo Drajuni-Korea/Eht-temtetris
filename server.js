@@ -584,13 +584,14 @@ async function processJob(job){
             tierCandidates:tierHits
           }
         };
-      }catch{
+      }catch(err){
+        console.error('[OCR ERROR]', f.originalName, err?.stack || err);
         job.results[i] = {
           index:i,
           name:f.originalName,
           imageUrl:`/uploads/${job.id}/${path.basename(f.path)}`,
           complete:false,
-          reason:'OCR 분석 실패',
+          reason:'OCR 분석 실패: '+String(err?.message || err),
           data:{
             slot:null,
             tier:null,
