@@ -111,24 +111,37 @@ async function findBlueOptionLines(filePath){
     .toBuffer({ resolveWithObject:true });
 
   const w=info.width, h=info.height, ch=info.channels;
-  const x0=Math.floor(w*0.12), x1=Math.floor(w*0.90);
-  const y0=Math.floor(h*0.28), y1=Math.floor(h*0.62);
-  const rowCounts=new Uint32Array(h);
 
-  // 화면 중앙의 옵션 패널 범위에서만 파란 글자 픽셀을 센다.
+  // 장비 팝업의 "옵션 텍스트 열"만 본다.
+  // 기존 범위가 너무 넓어 상단 기본 방어력과 뒤쪽 UI의 파란 픽셀이 섞일 수 있었다.
+  const x0=Math.floor(w*0.245), x1=Math.floor(w*0.79);
+  const y0=Math.floor(h*0.405), y1=Math.floor(h*0.575);
+  const rowCounts=new Uint32Array(h);
+  const rowMinX=new Int32Array(h); rowMinX.fill(w);
+  const rowMaxX=new Int32Array(h); rowMaxX.fill(-1);
+
   for(let y=y0;y<y1;y++){
-    let c=0;
-    for(let x=x0;x<x1;x+=2){
+    let count=0, minX=w, maxX=-1;
+    for(let x=x0;x<x1;x++){
       const p=(y*w+x)*ch;
-      if(isEffectiveBlue(data[p],data[p+1],data[p+2])) c++;
+      if(isEffectiveBlue(data[p],data[p+1],data[p+2])){
+        count++;
+        if(x<minX) minX=x;
+        if(x>maxX) maxX=x;
+      }
     }
-    rowCounts[y]=c;
+    rowCounts[y]=count;
+    rowMinX[y]=minX;
+    rowMaxX[y]=maxX;
   }
 
   // 파란 텍스트가 실제로 존재하는 수평 밴드만 묶는다.
-  const minPixels=Math.max(8,Math.floor((x1-x0)*0.008));
+  const minPixels=Math.max(10,Math.floor((x1-x0)*0.018));
   const ys=[];
-  for(let y=y0;y<y1;y++) if(rowCounts[y]>=minPixels) ys.push(y);
+  for(let y=y0;y<y1;y++){
+    const span=rowMaxX[y]>=0 ? rowMaxX[y]-rowMinX[y]+1 : 0;
+    if(rowCounts[y]>=minPixels && span>=Math.floor(w*0.08)) ys.push(y);
+  }
 
   const groups=[];
   if(ys.length){
@@ -150,13 +163,27 @@ async function findBlueOptionLines(filePath){
       const height=b-a+1;
       return height>=8 && height<=Math.max(80,Math.floor(h*0.04));
     })
-    .map(([a,b])=>({
-      x:Math.max(0,x0-Math.floor(w*0.01)),
-      y:Math.max(0,a-Math.floor(h*0.006)),
-      width:Math.min(w, x1-x0+Math.floor(w*0.02)),
-      height:Math.min(h-a, b-a+1+Math.floor(h*0.012))
-    }))
-    .slice(0,8);
+    .map(([a,b])=>{
+      let minX=w, maxX=-1, bluePixels=0;
+      for(let y=a;y<=b;y++){
+        if(rowMinX[y]<minX) minX=rowMinX[y];
+        if(rowMaxX[y]>maxX) maxX=rowMaxX[y];
+        bluePixels+=rowCounts[y];
+      }
+      const padX=Math.floor(w*0.012);
+      const padY=Math.floor(h*0.004);
+      const left=Math.max(x0, minX-padX);
+      const right=Math.min(x1, maxX+padX);
+      return {
+        x:left,
+        y:Math.max(y0,a-padY),
+        width:Math.max(1,right-left+1),
+        height:Math.min(y1-a, b-a+1+padY*2),
+        bluePixels
+      };
+    })
+    .filter(r=>r.bluePixels>=Math.max(35,Math.floor(w*0.05)))
+    .slice(0,6);
 }
 
 async function makeBlueLineMask(filePath,rect){
@@ -166,15 +193,32 @@ async function makeBlueLineMask(filePath,rect){
     .raw()
     .toBuffer({ resolveWithObject:true });
 
-  const out=Buffer.alloc(info.width*info.height);
-  const ch=info.channels;
-  for(let p=0,j=0;p<data.length;p+=ch,j++){
-    out[j]=isEffectiveBlue(data[p],data[p+1],data[p+2])?0:255;
+  const w=info.width, h=info.height, ch=info.channels;
+  const blue=new Uint8Array(w*h);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      const p=(y*w+x)*ch;
+      if(isEffectiveBlue(data[p],data[p+1],data[p+2])) blue[y*w+x]=1;
+    }
   }
 
-  return sharp(out,{raw:{width:info.width,height:info.height,channels:1}})
-    .resize({width:info.width*3,height:info.height*3,kernel:'nearest'})
-    .extend({top:24,bottom:24,left:36,right:36,background:255})
+  // 픽셀 폰트의 끊긴 획을 1px 정도 이어서 한글 OCR 오독을 줄인다.
+  const out=Buffer.alloc(w*h,255);
+  for(let y=0;y<h;y++){
+    for(let x=0;x<w;x++){
+      if(!blue[y*w+x]) continue;
+      for(let dy=-1;dy<=1;dy++){
+        for(let dx=-1;dx<=1;dx++){
+          const nx=x+dx, ny=y+dy;
+          if(nx>=0 && nx<w && ny>=0 && ny<h) out[ny*w+nx]=0;
+        }
+      }
+    }
+  }
+
+  return sharp(out,{raw:{width:w,height:h,channels:1}})
+    .resize({width:w*4,height:h*4,kernel:'nearest'})
+    .extend({top:28,bottom:28,left:44,right:44,background:255})
     .png()
     .toBuffer();
 }
