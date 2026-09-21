@@ -154,10 +154,23 @@ async function pollServerJob(id){
     if(job.status==='completed'){await applyServerJob(job);$('serverStatus').innerHTML='<span class="good">서버 작업 완료</span> · 다른 앱으로 이동해도 서버에서 계속 처리됩니다.';return}
     if(job.status==='failed')throw new Error(job.error||'server job failed');
     setTimeout(()=>pollServerJob(id),2000);
-  }catch(e){$('serverStatus').innerHTML='<span class="bad">서버 상태 확인 실패</span> · '+e.message;setTimeout(()=>pollServerJob(id),5000)}
+  }catch(e){
+    const msg=String(e?.message||e);
+    if(msg.includes('job not found')){
+      // 배포/재시작으로 사라진 예전 작업은 더 이상 재조회하지 않는다.
+      if(localStorage.getItem(JOB_KEY)===id) localStorage.removeItem(JOB_KEY);
+      $('serverStatus').innerHTML='<span class="warn">이전 OCR 작업 기록이 만료되었습니다.</span> · 새 이미지를 등록하면 정상 처리됩니다.';
+      return;
+    }
+    $('serverStatus').innerHTML='<span class="bad">서버 상태 확인 실패</span> · '+msg;
+    setTimeout(()=>pollServerJob(id),5000);
+  }
 }
 $('imgInput').onchange=async e=>{
   ensureServerUI();const files=[...e.target.files];if(!files.length)return;
+  // 새 작업 시작 시 과거 작업 폴링/에러 잔상을 즉시 제거한다.
+  localStorage.removeItem(JOB_KEY);
+  $('serverStatus').textContent='새 OCR 작업 준비 중…';
   const fd=new FormData();files.forEach(f=>fd.append('images',f));
   $('ocrStatus').textContent=files.length+'개 이미지를 서버로 업로드 중…';
   $('serverStatus').textContent='업로드가 끝나면 다른 앱으로 이동해도 됩니다.';
