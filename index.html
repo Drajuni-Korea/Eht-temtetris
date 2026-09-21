@@ -109,12 +109,18 @@ function renderServerFailed(){
   ensureServerUI();
   $('serverFailedCount').textContent=serverFailedScans.length+'개';
   $('serverFailedBox').style.display=serverFailedScans.length?'block':'none';
-  $('serverFailedList').innerHTML=serverFailedScans.map(f=>'<div class="item"><img src="'+f.imageUrl+'" style="width:100%;height:160px;object-fit:contain;border-radius:10px;background:#090b0f;border:1px solid var(--line);margin-bottom:8px"><b>'+f.name+'</b><div class="mini" style="margin-top:4px">'+f.reason+'</div><div class="opts">'+((f.data?.opts||[]).map(x=>names[x]||x).join(' / ')||'인식 옵션 없음')+'</div><button class="btn sec" style="width:100%;margin-top:8px" data-server-manual="'+f.index+'">수동 등록</button></div>').join('');
+  $('serverFailedList').innerHTML=serverFailedScans.map(f=>{
+    const opts=(f.data?.opts||[]).map(x=>names[x]||x);
+    const uncertain=(f.uncertainFields||[]);
+    const checkText=uncertain.length?'확인할 항목: '+uncertain.join(', '):'일부 항목 확인 필요';
+    return '<div class="item"><img src="'+f.imageUrl+'" style="width:100%;height:160px;object-fit:contain;border-radius:10px;background:#090b0f;border:1px solid var(--line);margin-bottom:8px"><b>'+f.name+'</b><div class="mini" style="margin-top:4px">'+checkText+'</div><div class="opts">'+(opts.length?('인식됨: '+opts.join(' / ')):'인식 옵션 없음')+'</div><button class="btn sec" style="width:100%;margin-top:8px" data-server-manual="'+f.index+'">확인하고 등록</button></div>';
+  }).join('');
   document.querySelectorAll('[data-server-manual]').forEach(b=>b.onclick=()=>{
     const f=serverFailedScans.find(x=>String(x.index)===String(b.dataset.serverManual));if(!f)return;
     manualServerFailId=f.index;setServerManualForm(f.data||{});
     $('preview').src=f.imageUrl;$('preview').style.display='block';
-    $('ocrStatus').innerHTML='<span class="warn">수동 등록 중:</span> '+f.name+'<br>인식값을 확인·수정한 뒤 등록 버튼을 누르세요.';
+    const uncertain=(f.uncertainFields||[]).join(', ');
+    $('ocrStatus').innerHTML='<span class="warn">확인 필요:</span> '+f.name+'<br>'+(uncertain?uncertain+'만 확인해 주세요.':'자동 인식값을 확인해 주세요.');
   });
 }
 async function serverApi(path,opts){const r=await fetch(path,opts);if(!r.ok)throw new Error(await r.text());return r.json()}
@@ -132,7 +138,7 @@ async function applyServerJob(job){
       }
       success++;
     }else{
-      serverFailedScans.push({index:r.index,name:r.name,imageUrl:r.imageUrl,reason:r.reason||'확인 필요',data:r.data||{}});
+      serverFailedScans.push({index:r.index,name:r.name,imageUrl:r.imageUrl,reason:r.reason||'확인 필요',uncertainFields:r.uncertainFields||[],data:r.data||{}});
     }
   }
   renderServerFailed();
