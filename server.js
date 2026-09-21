@@ -337,7 +337,7 @@ async function makeBlueLineMask(filePath,rect){
 
   return sharp(out,{raw:{width:w,height:h,channels:1}})
     .resize({width:w*4,height:h*4,kernel:'nearest'})
-    .extend({top:28,bottom:28,left:44,right:44,background:255})
+    .extend({top:28,bottom:28,left:44,right:44,background:{r:255,g:255,b:255,alpha:1}})
     .png()
     .toBuffer();
 }
