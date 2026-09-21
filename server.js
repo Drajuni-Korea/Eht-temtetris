@@ -109,8 +109,18 @@ function classifyOptionLine(text){
     const score=1-d/Math.max(head.length,target.length,1);
     if(!best||score>best.score) best={key,score,method:'fuzzy',head,target};
   }
-  // 짧은 단어의 우연 매칭을 막고, 충분히 비슷한 경우만 채택.
-  return best && best.score>=0.58 ? best : null;
+  // 짧은 단어는 우연 매칭이 매우 잘 생긴다. 특히 "방어력"이 잡음에 끼는 문제가 있어 강하게 제한한다.
+  if(!best) return null;
+  const shortTarget=best.target.length<=3;
+  const threshold=shortTarget?0.86:0.68;
+  if(best.score<threshold) return null;
+  // 방어력/체력/회피처럼 짧은 옵션은 원문에 해당 음절이 2글자 이상 실제로 보여야 한다.
+  if(shortTarget){
+    let overlap=0;
+    for(const ch of new Set(best.target)) if(head.includes(ch)) overlap++;
+    if(overlap<2) return null;
+  }
+  return best;
 }
 
 const slotMap = [
@@ -205,11 +215,11 @@ async function findBlueOptionLines(filePath){
     if(prev-a>=5) groups.push([a,prev]);
   }
 
-  // 너무 위/아래의 잡음이나 아이콘은 제거하고, 텍스트 줄 크기만 채택.
-  return groups
+  // 후보 밴드를 텍스트 줄 단위로 만든다.
+  let rects=groups
     .filter(([a,b])=>{
       const height=b-a+1;
-      return height>=8 && height<=Math.max(80,Math.floor(h*0.04));
+      return height>=5 && height<=Math.max(90,Math.floor(h*0.05));
     })
     .map(([a,b])=>{
       let minX=w, maxX=-1, bluePixels=0;
@@ -218,8 +228,8 @@ async function findBlueOptionLines(filePath){
         if(rowMaxX[y]>maxX) maxX=rowMaxX[y];
         bluePixels+=rowCounts[y];
       }
-      const padX=Math.floor(w*0.012);
-      const padY=Math.floor(h*0.004);
+      const padX=Math.floor(w*0.02);
+      const padY=Math.max(3,Math.floor(h*0.005));
       const left=Math.max(x0, minX-padX);
       const right=Math.min(x1, maxX+padX);
       return {
@@ -230,8 +240,39 @@ async function findBlueOptionLines(filePath){
         bluePixels
       };
     })
-    .filter(r=>r.bluePixels>=Math.max(35,Math.floor(w*0.05)))
-    .slice(0,6);
+    .filter(r=>r.bluePixels>=Math.max(18,Math.floor(w*0.018)));
+
+  // EHT 일반 옵션은 세로 간격이 거의 일정하다.
+  // 색상 마스크가 글자 획을 놓쳐 1~2줄만 검출한 경우, 검출된 줄 간격을 이용해 4줄 슬롯을 복원한다.
+  rects.sort((a,b)=>a.y-b.y);
+  if(rects.length>=2 && rects.length<4){
+    const centers=rects.map(r=>r.y+r.height/2);
+    const diffs=[];
+    for(let i=1;i<centers.length;i++) diffs.push(centers[i]-centers[i-1]);
+    const step=diffs.length ? diffs.sort((a,b)=>a-b)[Math.floor(diffs.length/2)] : Math.floor(h*0.022);
+    if(step>=Math.floor(h*0.012) && step<=Math.floor(h*0.05)){
+      const lineH=Math.max(...rects.map(r=>r.height));
+      let first=centers[0];
+      // 현재 검출 줄이 2~4번째일 수도 있으므로 위쪽으로 슬롯을 채운다.
+      while(first-step>=y0 && rects.length<4) first-=step;
+      const synth=[];
+      for(let i=0;i<4;i++){
+        const cy=first+i*step;
+        if(cy<y0 || cy>y1) continue;
+        synth.push({
+          x:x0,
+          y:Math.max(y0,Math.round(cy-lineH/2)),
+          width:x1-x0,
+          height:Math.max(lineH,Math.floor(h*0.018)),
+          bluePixels:0,
+          synthetic:true
+        });
+      }
+      if(synth.length>=4) rects=synth.slice(0,4);
+    }
+  }
+
+  return rects.slice(0,6);
 }
 
 async function makeBlueLineMask(filePath,rect){
@@ -320,6 +361,8 @@ async function recognizeBlueOptions(worker,filePath){
       confidences.push(Number(r1.data.confidence||0));
       decisions.push({original:t1,mask:t2,chosen});
 
+      // 현재 반복 오검출된 방어력은 fuzzy 결과로는 절대 자동 채택하지 않는다.
+      if(chosen?.key==='def' && chosen.method!=='exact' && chosen.method!=='consensus') chosen=null;
       if(chosen && !found.includes(chosen.key)) found.push(chosen.key);
     }
   }finally{
