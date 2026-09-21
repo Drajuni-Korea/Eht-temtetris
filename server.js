@@ -65,6 +65,54 @@ const patterns = [
   ['stamina', /기력/]
 ];
 
+
+const optionLabels = {
+  atkspd:'공격속도', critdmg:'치명타피해량', crit:'치명타확률', eva:'회피',
+  dmgred:'데미지감소', leech:'흡혈', movespd:'이동속도', atk:'전체공격력',
+  def:'전체방어력', hp:'체력', boss:'보스류', human:'영장류', undead:'언데드',
+  demon:'악마류', animal:'동물류', exp:'경험치', gold:'골드', material:'재료',
+  hunger:'허기', mood:'기분', stamina:'기력'
+};
+
+function compactHangul(s=''){
+  return s.replace(/[^가-힣]/g,'');
+}
+
+function levenshtein(a,b){
+  const m=a.length,n=b.length;
+  if(!m)return n;if(!n)return m;
+  const prev=Array(n+1).fill(0).map((_,i)=>i), cur=Array(n+1).fill(0);
+  for(let i=1;i<=m;i++){
+    cur[0]=i;
+    for(let j=1;j<=n;j++) cur[j]=Math.min(
+      cur[j-1]+1, prev[j]+1, prev[j-1]+(a[i-1]===b[j-1]?0:1)
+    );
+    for(let j=0;j<=n;j++) prev[j]=cur[j];
+  }
+  return prev[n];
+}
+
+function classifyOptionLine(text){
+  const normalized=normalizeOCR(text);
+  const exact=[];
+  for(const [key,re] of patterns) if(re.test(normalized)) exact.push(key);
+  if(exact.length===1) return {key:exact[0],score:1,method:'exact'};
+
+  // 숫자/범위/증가 같은 뒤쪽 텍스트를 제외하고 한글 옵션명만 비교한다.
+  const head=compactHangul(normalized.split(/\d|\[|%/)[0]);
+  if(!head) return null;
+
+  let best=null;
+  for(const [key,label] of Object.entries(optionLabels)){
+    const target=compactHangul(label);
+    const d=levenshtein(head,target);
+    const score=1-d/Math.max(head.length,target.length,1);
+    if(!best||score>best.score) best={key,score,method:'fuzzy',head,target};
+  }
+  // 짧은 단어의 우연 매칭을 막고, 충분히 비슷한 경우만 채택.
+  return best && best.score>=0.58 ? best : null;
+}
+
 const slotMap = [
   ['gloves', /장갑류|장갑|피스트/],
   ['boots', /신발류|경갑|부츠/],
@@ -223,25 +271,56 @@ async function makeBlueLineMask(filePath,rect){
     .toBuffer();
 }
 
+
+async function makeOriginalLineCrop(filePath,rect){
+  // 파란 픽셀은 "줄 위치 찾기"에만 사용하고 OCR은 원본 색상/안티앨리어싱을 보존한다.
+  return sharp(filePath)
+    .extract({left:rect.x,top:rect.y,width:rect.width,height:rect.height})
+    .resize({width:Math.max(1,rect.width*4),height:Math.max(1,rect.height*4),kernel:'lanczos3'})
+    .sharpen()
+    .png()
+    .toBuffer();
+}
+
 async function recognizeBlueOptions(worker,filePath){
   const rects=await findBlueOptionLines(filePath);
   const found=[];
   const lines=[];
   const confidences=[];
+  const decisions=[];
 
-  // 한 줄씩 따로 OCR한다. 상단 흰색 방어력 등은 이 단계에 들어오지 않는다.
   await worker.setParameters({tessedit_pageseg_mode:'7'});
   try{
     for(const rect of rects){
-      const mask=await makeBlueLineMask(filePath,rect);
-      const {data:{text,confidence}}=await worker.recognize(mask);
-      const line=normalizeOCR(text);
-      if(line) lines.push(line);
-      confidences.push(Number(confidence||0));
+      // 1차: 원본 색상을 보존한 한 줄 OCR
+      const original=await makeOriginalLineCrop(filePath,rect);
+      const r1=await worker.recognize(original);
+      const t1=normalizeOCR(r1.data.text||'');
 
-      for(const [key,re] of patterns){
-        if(re.test(line) && !found.includes(key)) found.push(key);
+      // 2차: 파란색 이진 마스크 OCR (보조)
+      const mask=await makeBlueLineMask(filePath,rect);
+      const r2=await worker.recognize(mask);
+      const t2=normalizeOCR(r2.data.text||'');
+
+      const c1=classifyOptionLine(t1);
+      const c2=classifyOptionLine(t2);
+      let chosen=null;
+
+      // 원본 OCR을 우선한다. 양쪽이 같은 옵션이면 신뢰도를 높인다.
+      if(c1 && c2 && c1.key===c2.key){
+        chosen={...c1,score:Math.max(c1.score,c2.score),method:'consensus'};
+      }else if(c1 && (!c2 || c1.score>=c2.score+0.10 || c1.method==='exact')){
+        chosen=c1;
+      }else if(c2 && c2.score>=0.72){
+        chosen=c2;
       }
+
+      const shown=t1 || t2;
+      if(shown) lines.push(shown);
+      confidences.push(Number(r1.data.confidence||0));
+      decisions.push({original:t1,mask:t2,chosen});
+
+      if(chosen && !found.includes(chosen.key)) found.push(chosen.key);
     }
   }finally{
     await worker.setParameters({tessedit_pageseg_mode:'3'});
@@ -251,6 +330,7 @@ async function recognizeBlueOptions(worker,filePath){
     blueText:lines.join(' | '),
     blueLines:lines,
     blueLineCount:rects.length,
+    decisions,
     found,
     confidence:confidences.length ? confidences.reduce((a,b)=>a+b,0)/confidences.length : 0
   };
@@ -424,6 +504,7 @@ async function processJob(job){
             blueText:blue.blueText,
             blueLines:blue.blueLines,
             blueLineCount:blue.blueLineCount,
+            optionDecisions:blue.decisions,
             blueConfidence:blue.confidence,
             baseConfidence:Number(baseConfidence||0),
             slotCandidates:slotHits,
