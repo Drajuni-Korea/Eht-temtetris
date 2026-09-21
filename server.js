@@ -170,10 +170,40 @@ async function findBlueOptionLines(filePath){
 
   const w=info.width, h=info.height, ch=info.channels;
 
-  // 장비 팝업의 "옵션 텍스트 열"만 본다.
-  // 기존 범위가 너무 넓어 상단 기본 방어력과 뒤쪽 UI의 파란 픽셀이 섞일 수 있었다.
-  const x0=Math.floor(w*0.245), x1=Math.floor(w*0.79);
-  const y0=Math.floor(h*0.405), y1=Math.floor(h*0.575);
+  // 장비 팝업의 자홍색 제목 바를 먼저 찾아 팝업 위치를 동적으로 보정한다.
+  // 기존 고정 y=40.5~57.5%는 실제 옵션(약 34~39%)보다 너무 아래를 보고 있었다.
+  let magentaRows=[];
+  const mx0=Math.floor(w*0.18), mx1=Math.floor(w*0.82);
+  const my0=Math.floor(h*0.18), my1=Math.floor(h*0.52);
+  for(let y=my0;y<my1;y++){
+    let count=0;
+    for(let x=mx0;x<mx1;x+=2){
+      const p=(y*w+x)*ch;
+      const [hh,ss,vv]=rgbToHsv(data[p],data[p+1],data[p+2]);
+      if(hh>=285 && hh<=340 && ss>=0.35 && vv>=0.28) count++;
+    }
+    if(count>=Math.max(10,Math.floor((mx1-mx0)*0.012))) magentaRows.push(y);
+  }
+
+  let headerY=null;
+  if(magentaRows.length){
+    // 가장 긴 연속 자홍색 밴드를 장비 제목 바로 간주한다.
+    let best=[magentaRows[0],magentaRows[0]], a=magentaRows[0], prev=magentaRows[0];
+    for(let i=1;i<magentaRows.length;i++){
+      const y=magentaRows[i];
+      if(y-prev>3){
+        if(prev-a>best[1]-best[0]) best=[a,prev];
+        a=y;
+      }
+      prev=y;
+    }
+    if(prev-a>best[1]-best[0]) best=[a,prev];
+    headerY=(best[0]+best[1])/2;
+  }
+
+  const x0=Math.floor(w*0.20), x1=Math.floor(w*0.82);
+  const y0=Math.max(0,Math.floor(headerY!=null ? headerY+h*0.058 : h*0.325));
+  const y1=Math.min(h,Math.floor(headerY!=null ? headerY+h*0.125 : h*0.405));
   const rowCounts=new Uint32Array(h);
   const rowMinX=new Int32Array(h); rowMinX.fill(w);
   const rowMaxX=new Int32Array(h); rowMaxX.fill(-1);
