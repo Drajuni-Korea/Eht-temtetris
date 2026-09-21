@@ -112,7 +112,7 @@ function classifyOptionLine(text){
   // 짧은 단어는 우연 매칭이 매우 잘 생긴다. 특히 "방어력"이 잡음에 끼는 문제가 있어 강하게 제한한다.
   if(!best) return null;
   const shortTarget=best.target.length<=3;
-  const threshold=shortTarget?0.86:0.68;
+  const threshold=shortTarget?0.64:0.68;
   if(best.score<threshold) return null;
   // 방어력/체력/회피처럼 짧은 옵션은 원문에 해당 음절이 2글자 이상 실제로 보여야 한다.
   if(shortTarget){
@@ -275,16 +275,15 @@ async function findBlueOptionLines(filePath){
   // EHT 일반 옵션은 세로 간격이 거의 일정하다.
   // 색상 마스크가 글자 획을 놓쳐 1~2줄만 검출한 경우, 검출된 줄 간격을 이용해 4줄 슬롯을 복원한다.
   rects.sort((a,b)=>a.y-b.y);
-  if(rects.length>=2 && rects.length<4){
+  if(rects.length>=1 && rects.length<4){
     const centers=rects.map(r=>r.y+r.height/2);
     const diffs=[];
     for(let i=1;i<centers.length;i++) diffs.push(centers[i]-centers[i-1]);
-    const step=diffs.length ? diffs.sort((a,b)=>a-b)[Math.floor(diffs.length/2)] : Math.floor(h*0.022);
+    // EHT 옵션 4줄은 거의 일정 간격. 1줄만 잡혀도 그 줄을 첫 파란 옵션으로 보고 아래 3줄을 복원한다.
+    const step=diffs.length ? diffs.sort((a,b)=>a-b)[Math.floor(diffs.length/2)] : Math.floor(h*0.014);
     if(step>=Math.floor(h*0.012) && step<=Math.floor(h*0.05)){
       const lineH=Math.max(...rects.map(r=>r.height));
-      let first=centers[0];
-      // 현재 검출 줄이 2~4번째일 수도 있으므로 위쪽으로 슬롯을 채운다.
-      while(first-step>=y0 && rects.length<4) first-=step;
+      const first=centers[0];
       const synth=[];
       for(let i=0;i<4;i++){
         const cy=first+i*step;
