@@ -561,12 +561,29 @@ async function processJob(job){
           opts.length<4 ? `파란 유효 옵션 ${opts.length}/4개 인식` :
           `파란 유효 옵션이 ${opts.length}개로 과다 인식됨`;
 
+        const uncertainFields=[];
+        if(!slot) uncertainFields.push('부위');
+        if(!tier) uncertainFields.push('단계');
+        if(opts.length<4) uncertainFields.push(`옵션 ${4-opts.length}개`);
+        if(opts.length>4) uncertainFields.push('옵션 중복/과다');
+
+        console.log('[OCR RESULT]', JSON.stringify({
+          jobId:job.id,index:i,name:f.originalName,complete,reason,
+          slot,tier,special,opts,
+          blueLineCount:blue.blueLineCount,
+          blueLines:blue.blueLines,
+          decisions:blue.decisions,
+          blueConfidence:blue.confidence,
+          baseConfidence:Number(baseConfidence||0)
+        }));
+
         job.results[i] = {
           index:i,
           name:f.originalName,
           imageUrl:`/uploads/${job.id}/${path.basename(f.path)}`,
           complete,
           reason,
+          uncertainFields,
           data:{
             slot,
             tier,
