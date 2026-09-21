@@ -279,26 +279,30 @@ async function findBlueOptionLines(filePath){
     const centers=rects.map(r=>r.y+r.height/2);
     const diffs=[];
     for(let i=1;i<centers.length;i++) diffs.push(centers[i]-centers[i-1]);
-    // EHT 옵션 4줄은 거의 일정 간격. 1줄만 잡혀도 그 줄을 첫 파란 옵션으로 보고 아래 3줄을 복원한다.
-    const step=diffs.length ? diffs.sort((a,b)=>a-b)[Math.floor(diffs.length/2)] : Math.floor(h*0.014);
-    if(step>=Math.floor(h*0.012) && step<=Math.floor(h*0.05)){
-      const lineH=Math.max(...rects.map(r=>r.height));
-      const first=centers[0];
-      const synth=[];
-      for(let i=0;i<4;i++){
-        const cy=first+i*step;
-        if(cy<y0 || cy>y1) continue;
-        synth.push({
-          x:x0,
-          y:Math.max(y0,Math.round(cy-lineH/2)),
-          width:x1-x0,
-          height:Math.max(lineH,Math.floor(h*0.018)),
-          bluePixels:0,
-          synthetic:true
-        });
-      }
-      if(synth.length>=4) rects=synth.slice(0,4);
+
+    // IMG_1403 포함 EHT 장비창은 파란 옵션 4줄의 기준선 간격이 화면 높이의 약 1.2~1.4%.
+    // 한 줄만 검출돼도 첫 줄을 기준으로 반드시 4개의 독립 OCR crop을 만든다.
+    let step=diffs.length ? diffs.sort((a,b)=>a-b)[Math.floor(diffs.length/2)] : Math.round(h*0.0125);
+    step=Math.max(Math.round(h*0.0105),Math.min(Math.round(h*0.016),step));
+
+    const first=centers[0];
+    const cropH=Math.max(12,Math.round(step*0.78));
+    const synth=[];
+    for(let i=0;i<4;i++){
+      const cy=first+i*step;
+      const top=Math.max(0,Math.round(cy-cropH/2));
+      if(top+cropH>h) break;
+      synth.push({
+        x:x0,
+        y:top,
+        width:x1-x0,
+        height:cropH,
+        bluePixels:0,
+        synthetic:true,
+        row:i+1
+      });
     }
+    if(synth.length===4) rects=synth;
   }
 
   return rects.slice(0,6);
