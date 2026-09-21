@@ -170,11 +170,10 @@ async function findBlueOptionLines(filePath){
 
   const w=info.width, h=info.height, ch=info.channels;
 
-  // 장비 팝업의 자홍색 제목 바를 먼저 찾아 팝업 위치를 동적으로 보정한다.
-  // 기존 고정 y=40.5~57.5%는 실제 옵션(약 34~39%)보다 너무 아래를 보고 있었다.
+  // 1) 장비 팝업의 자홍색 제목 바를 찾아 대략적인 팝업 세로 위치를 잡는다.
   let magentaRows=[];
-  const mx0=Math.floor(w*0.18), mx1=Math.floor(w*0.82);
-  const my0=Math.floor(h*0.18), my1=Math.floor(h*0.52);
+  const mx0=Math.floor(w*0.16), mx1=Math.floor(w*0.84);
+  const my0=Math.floor(h*0.15), my1=Math.floor(h*0.55);
   for(let y=my0;y<my1;y++){
     let count=0;
     for(let x=mx0;x<mx1;x+=2){
@@ -182,12 +181,11 @@ async function findBlueOptionLines(filePath){
       const [hh,ss,vv]=rgbToHsv(data[p],data[p+1],data[p+2]);
       if(hh>=285 && hh<=340 && ss>=0.35 && vv>=0.28) count++;
     }
-    if(count>=Math.max(10,Math.floor((mx1-mx0)*0.012))) magentaRows.push(y);
+    if(count>=Math.max(8,Math.floor((mx1-mx0)*0.008))) magentaRows.push(y);
   }
 
   let headerY=null;
   if(magentaRows.length){
-    // 가장 긴 연속 자홍색 밴드를 장비 제목 바로 간주한다.
     let best=[magentaRows[0],magentaRows[0]], a=magentaRows[0], prev=magentaRows[0];
     for(let i=1;i<magentaRows.length;i++){
       const y=magentaRows[i];
@@ -201,15 +199,18 @@ async function findBlueOptionLines(filePath){
     headerY=(best[0]+best[1])/2;
   }
 
-  const x0=Math.floor(w*0.20), x1=Math.floor(w*0.82);
-  const y0=Math.max(0,Math.floor(headerY!=null ? headerY+h*0.058 : h*0.325));
-  const y1=Math.min(h,Math.floor(headerY!=null ? headerY+h*0.125 : h*0.405));
+  // 2) "첫 옵션 위치"를 추정하지 않는다.
+  // 일반/유니크 모두 대응하도록 옵션 패널 전체를 넓게 훑고 파란 글자 줄 자체를 찾는다.
+  const x0=Math.floor(w*0.16), x1=Math.floor(w*0.84);
+  const y0=Math.max(0,Math.floor(headerY!=null ? headerY+h*0.035 : h*0.28));
+  const y1=Math.min(h,Math.floor(headerY!=null ? headerY+h*0.31 : h*0.62));
+
   const rowCounts=new Uint32Array(h);
   const rowMinX=new Int32Array(h); rowMinX.fill(w);
   const rowMaxX=new Int32Array(h); rowMaxX.fill(-1);
 
   for(let y=y0;y<y1;y++){
-    let count=0, minX=w, maxX=-1;
+    let count=0,minX=w,maxX=-1;
     for(let x=x0;x<x1;x++){
       const p=(y*w+x)*ch;
       if(isEffectiveBlue(data[p],data[p+1],data[p+2])){
@@ -223,89 +224,78 @@ async function findBlueOptionLines(filePath){
     rowMaxX[y]=maxX;
   }
 
-  // 파란 텍스트가 실제로 존재하는 수평 밴드만 묶는다.
-  const minPixels=Math.max(10,Math.floor((x1-x0)*0.018));
-  const ys=[];
+  // 3) 안티앨리어싱 때문에 한 행의 파란 픽셀이 적어도,
+  // 인접 5개 행 합계가 충분하면 텍스트 행으로 인정한다.
+  const active=[];
+  const minSmooth=Math.max(10,Math.floor(w*0.012));
   for(let y=y0;y<y1;y++){
-    const span=rowMaxX[y]>=0 ? rowMaxX[y]-rowMinX[y]+1 : 0;
-    if(rowCounts[y]>=minPixels && span>=Math.floor(w*0.08)) ys.push(y);
+    let smooth=0;
+    for(let dy=-2;dy<=2;dy++){
+      const yy=y+dy;
+      if(yy>=y0&&yy<y1) smooth+=rowCounts[yy];
+    }
+    if(smooth>=minSmooth) active.push(y);
   }
 
+  // 4) 가까운 행들을 하나의 텍스트 줄로 묶는다.
   const groups=[];
-  if(ys.length){
-    let a=ys[0], prev=ys[0];
-    for(let i=1;i<ys.length;i++){
-      const y=ys[i];
+  if(active.length){
+    let a=active[0],prev=active[0];
+    for(let i=1;i<active.length;i++){
+      const y=active[i];
       if(y-prev>4){
-        if(prev-a>=5) groups.push([a,prev]);
+        groups.push([a,prev]);
         a=y;
       }
       prev=y;
     }
-    if(prev-a>=5) groups.push([a,prev]);
+    groups.push([a,prev]);
   }
 
-  // 후보 밴드를 텍스트 줄 단위로 만든다.
-  let rects=groups
-    .filter(([a,b])=>{
-      const height=b-a+1;
-      return height>=5 && height<=Math.max(90,Math.floor(h*0.05));
-    })
-    .map(([a,b])=>{
-      let minX=w, maxX=-1, bluePixels=0;
-      for(let y=a;y<=b;y++){
-        if(rowMinX[y]<minX) minX=rowMinX[y];
-        if(rowMaxX[y]>maxX) maxX=rowMaxX[y];
-        bluePixels+=rowCounts[y];
-      }
-      const padX=Math.floor(w*0.02);
-      const padY=Math.max(3,Math.floor(h*0.005));
-      const left=Math.max(x0, minX-padX);
-      const right=Math.min(x1, maxX+padX);
-      return {
-        x:left,
-        y:Math.max(y0,a-padY),
-        width:Math.max(1,right-left+1),
-        height:Math.min(y1-a, b-a+1+padY*2),
-        bluePixels
-      };
-    })
-    .filter(r=>r.bluePixels>=Math.max(18,Math.floor(w*0.018)));
-
-  // EHT 일반 옵션은 세로 간격이 거의 일정하다.
-  // 색상 마스크가 글자 획을 놓쳐 1~2줄만 검출한 경우, 검출된 줄 간격을 이용해 4줄 슬롯을 복원한다.
-  rects.sort((a,b)=>a.y-b.y);
-  if(rects.length>=1 && rects.length<4){
-    const centers=rects.map(r=>r.y+r.height/2);
-    const diffs=[];
-    for(let i=1;i<centers.length;i++) diffs.push(centers[i]-centers[i-1]);
-
-    // IMG_1403 포함 EHT 장비창은 파란 옵션 4줄의 기준선 간격이 화면 높이의 약 1.2~1.4%.
-    // 한 줄만 검출돼도 첫 줄을 기준으로 반드시 4개의 독립 OCR crop을 만든다.
-    let step=diffs.length ? diffs.sort((a,b)=>a-b)[Math.floor(diffs.length/2)] : Math.round(h*0.0125);
-    step=Math.max(Math.round(h*0.0105),Math.min(Math.round(h*0.016),step));
-
-    const first=centers[0];
-    const cropH=Math.max(12,Math.round(step*0.78));
-    const synth=[];
-    for(let i=0;i<4;i++){
-      const cy=first+i*step;
-      const top=Math.max(0,Math.round(cy-cropH/2));
-      if(top+cropH>h) break;
-      synth.push({
-        x:x0,
-        y:top,
-        width:x1-x0,
-        height:cropH,
-        bluePixels:0,
-        synthetic:true,
-        row:i+1
-      });
+  let rects=groups.map(([a,b])=>{
+    let minX=w,maxX=-1,bluePixels=0;
+    for(let y=a;y<=b;y++){
+      if(rowMinX[y]<minX) minX=rowMinX[y];
+      if(rowMaxX[y]>maxX) maxX=rowMaxX[y];
+      bluePixels+=rowCounts[y];
     }
-    if(synth.length===4) rects=synth;
+    const padX=Math.max(8,Math.floor(w*0.012));
+    const padY=Math.max(3,Math.floor(h*0.0025));
+    const left=Math.max(x0,(minX<w?minX:x0)-padX);
+    const right=Math.min(x1,(maxX>=0?maxX:x1)+padX);
+    return {
+      x:left,
+      y:Math.max(y0,a-padY),
+      width:Math.max(1,right-left+1),
+      height:Math.max(1,Math.min(y1, b+padY)-Math.max(y0,a-padY)+1),
+      bluePixels
+    };
+  }).filter(r=>{
+    // 실제 옵션 한 줄은 충분한 파란 픽셀을 가진다.
+    const plausibleHeight=r.height>=Math.max(8,Math.floor(h*0.004)) &&
+      r.height<=Math.max(90,Math.floor(h*0.035));
+    const enoughBlue=r.bluePixels>=Math.max(20,Math.floor(w*0.02));
+    return plausibleHeight && enoughBlue;
+  }).sort((a,b)=>a.y-b.y);
+
+  // 5) 파란 줄이 4개 이상이면 위에서부터 서로 일정 간격인 4개 조합을 우선한다.
+  // 유니크의 주황 고정효과는 애초에 파란색이 아니므로 자동으로 제외된다.
+  if(rects.length>4){
+    let best=null;
+    for(let i=0;i<=rects.length-4;i++){
+      const cand=rects.slice(i,i+4);
+      const centers=cand.map(r=>r.y+r.height/2);
+      const d=[centers[1]-centers[0],centers[2]-centers[1],centers[3]-centers[2]];
+      const mean=d.reduce((a,b)=>a+b,0)/3;
+      const variance=d.reduce((s,v)=>s+(v-mean)*(v-mean),0)/3;
+      const blue=cand.reduce((s,r)=>s+r.bluePixels,0);
+      const score=blue-(variance*8);
+      if(!best||score>best.score) best={score,cand};
+    }
+    if(best) rects=best.cand;
   }
 
-  return rects.slice(0,6);
+  return rects.slice(0,4);
 }
 
 async function makeBlueLineMask(filePath,rect){
