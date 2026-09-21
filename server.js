@@ -375,7 +375,9 @@ async function recognizeBlueOptions(worker,filePath){
         chosen={...c1,score:Math.max(c1.score,c2.score),method:'consensus'};
       }else if(c1 && (!c2 || c1.score>=c2.score+0.10 || c1.method==='exact')){
         chosen=c1;
-      }else if(c2 && c2.score>=0.72){
+      }else if(c2 && c2.score>=0.64){
+        // 색상 마스크는 한글 마지막 음절을 자주 틀린다(예: 보스튜→보스류).
+        // 옵션 사전과 2/3 이상 일치하면 후보로 채택한다.
         chosen=c2;
       }
 
