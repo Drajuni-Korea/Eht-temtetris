@@ -25,3 +25,5 @@ DATA_DIR=/data
 장비 목록 자체는 브라우저 IndexedDB에 저장됩니다.
 
 <!-- railway-deploy-trigger-20260921 -->
+
+<!-- railway-watch-trigger-20260921-2155 -->
