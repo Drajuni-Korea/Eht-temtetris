@@ -136,13 +136,45 @@ const slotMap = [
 
 const specialBySlot = {
   weapon: [['field','필드무기'],['colo','콜로무기'],['world','월드보스무기'],['devilWeapon','대악마무기']],
-  helmet: [['normal','일반'],['juggernaut','저거너트 헬름'],['blueHelm','콜로 블루 투구']],
-  gloves: [['normal','일반'],['blood','블러드 피스트'],['trueBlood','진 블러드피스트']],
-  boots: [['normal','일반'],['gale','질풍의 경갑'],['trueGale','진 질풍의 경갑']],
-  necklace: [['normal','일반'],['hades','하데스의 목걸이'],['trueHades','진 하데스의 목걸이'],['guard','경비대장의 목걸이'],['dragon','용의 가호 목걸이']],
-  ring: [['normal','일반'],['cyclone','싸이클론 링'],['trueCyclone','진 싸이클론 링'],['trinity','트리니티 링'],['sacrifice','수호자의 희생 반지']],
-  belt: [['normal','일반'],['thunder','뇌룡의 허리띠'],['trueThunder','진 뇌룡의 허리띠'],['alchemy','연금술사의 벨트']],
-  armor: [['normal','일반'],['frost','서리거인의 흉갑'],['trueFrost','진 서리거인의 흉갑'],['absorb','흡수의 갑옷'],['masochist','피학자의 갑옷']]
+  helmet: [
+    ['normal','일반'],['juggernaut','저거너트 헬름'],['blueHelm','콜로 블루 투구'],
+    ['pumpkin','호박 머리 모자'],['insight','통찰의 투구']
+  ],
+  gloves: [
+    ['normal','일반'],['blood','블러디 피스트'],['trueBlood','진 블러디 피스트'],
+    ['hecate','헤카테의 장갑']
+  ],
+  boots: [
+    ['normal','일반'],['gale','질풍의 경갑'],['trueGale','진 질풍의 경갑'],
+    ['indomitable','불굴의 경갑']
+  ],
+  necklace: [
+    ['normal','일반'],['hades','하데스의 목걸이'],['trueHades','진 하데스의 목걸이'],
+    ['guard','경비대장의 목걸이'],['dragon','용의 가호 목걸이']
+  ],
+  ring: [
+    ['normal','일반'],['cyclone','싸이클론 링'],['trueCyclone','진 싸이클론 링'],
+    ['trinity','트리니티 링'],['sacrifice','수호자의 희생 반지']
+  ],
+  belt: [
+    ['normal','일반'],['thunder','뇌룡의 허리띠'],['trueThunder','진 뇌룡의 허리띠'],
+    ['alchemy','연금술사의 벨트'],['juggernautBelt','저거너트 벨트'],['sylph','실프의 허리띠']
+  ],
+  armor: [
+    ['normal','일반'],['frost','서리거인의 흉갑'],['trueFrost','진 서리거인의 흉갑'],
+    ['absorb','흡수의 갑옷'],['masochist','피학자의 갑옷']
+  ]
+};
+
+const specialAliases = {
+  blood:['블러디피스트','블러드피스트'],
+  trueBlood:['진블러디피스트','진블러드피스트'],
+  pumpkin:['호박머리모자'],
+  insight:['통찰의투구'],
+  hecate:['헤카테의장갑'],
+  indomitable:['불굴의경갑'],
+  juggernautBelt:['저거너트벨트'],
+  sylph:['실프의허리띠']
 };
 
 const fixedSpecial = {
@@ -409,7 +441,8 @@ function detectSpecial(txt, slot) {
   const noSpace = txt.replace(/\s+/g, '');
   for (const [key, label] of list) {
     if (key === 'normal') continue;
-    if (noSpace.includes(label.replace(/\s+/g, ''))) return key;
+    const labels=[label.replace(/\s+/g,''),...(specialAliases[key]||[])];
+    if(labels.some(x=>noSpace.includes(x))) return key;
   }
   if(slot==='belt'){
     if(/진\s*뇌룡|뇌룡.*진/.test(txt)) return 'trueThunder';
