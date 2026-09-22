@@ -138,7 +138,7 @@ const specialBySlot = {
   weapon: [['field','필드무기'],['colo','콜로무기'],['world','월드보스무기'],['devilWeapon','대악마무기']],
   helmet: [
     ['normal','일반'],['juggernaut','저거너트 헬름'],['blueHelm','콜로 블루 투구'],
-    ['pumpkin','호박 머리 모자'],['insight','통찰의 투구']
+    ['pumpkin','호박 머리 모자'],['insight','통찰의 투구'],['juggernautUnique','저거너트 헬름']
   ],
   gloves: [
     ['normal','일반'],['blood','블러디 피스트'],['trueBlood','진 블러디 피스트'],
@@ -158,7 +158,7 @@ const specialBySlot = {
   ],
   belt: [
     ['normal','일반'],['thunder','뇌룡의 허리띠'],['trueThunder','진 뇌룡의 허리띠'],
-    ['alchemy','연금술사의 벨트'],['juggernautBelt','저거너트 벨트'],['sylph','실프의 허리띠']
+    ['alchemy','연금술사의 벨트'],['sylph','실프의 허리띠']
   ],
   armor: [
     ['normal','일반'],['frost','서리거인의 흉갑'],['trueFrost','진 서리거인의 흉갑'],
@@ -173,7 +173,7 @@ const specialAliases = {
   insight:['통찰의투구'],
   hecate:['헤카테의장갑'],
   indomitable:['불굴의경갑'],
-  juggernautBelt:['저거너트벨트'],
+  juggernautUnique:['저거너트헬름'],
   sylph:['실프의허리띠']
 };
 
