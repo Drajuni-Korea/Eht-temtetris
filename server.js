@@ -527,10 +527,18 @@ async function recognizeEquipmentHeader(worker,filePath){
   await worker.setParameters({tessedit_pageseg_mode:'6'});
   try{
     const {data:{text,confidence}}=await worker.recognize(crop);
-    return {text:normalizeOCR(text),confidence:Number(confidence||0)};
+    const lines=String(text||'').split(/\r?\n/).map(normalizeOCR).filter(Boolean);
+    return {text:normalizeOCR(text),lines,confidence:Number(confidence||0)};
   }finally{
     await worker.setParameters({tessedit_pageseg_mode:'3'});
   }
+}
+
+function extractEquipmentName(header){
+  const lines=header?.lines||[];
+  const noise=/^(신발류|장갑류|투구류|갑옷류|허리띠|벨트류|반지류|목걸이류|무기류|품질|아이템레벨|방어력|체력|공격력)/;
+  const line=lines.find(x=>x.length>=3&&!noise.test(x))||'';
+  return line.replace(/^[^가-힣A-Za-z0-9]+|[^가-힣A-Za-z0-9]+$/g,'').trim();
 }
 
 function inferTierFromOptionRanges(lines=[]){
@@ -572,6 +580,7 @@ async function processJob(job){
         const header = await recognizeEquipmentHeader(worker, f.path);
 
         const txt = normalizeOCR(text);
+        const equipmentName = extractEquipmentName(header);
         const combinedText = normalizeOCR(header.text+' '+txt);
         const found = blue.found;
 
@@ -589,7 +598,8 @@ async function processJob(job){
         }
         const slot = slotHits.length===1 ? slotHits[0] : null;
 
-        const special = slot ? detectSpecial(combinedText, slot) : null;
+        const specialText = normalizeOCR((equipmentName||'')+' '+header.text+' '+combinedText);
+        const special = slot ? detectSpecial(specialText, slot) : null;
         const fixed = fixedSpecial[special] || [];
         const opts = [...new Set([...fixed, ...found])];
         const grade = cGrade || textGrade(txt, tier);
@@ -620,7 +630,9 @@ async function processJob(job){
           blueLines:blue.blueLines,
           decisions:blue.decisions,
           blueConfidence:blue.confidence,
+          equipmentName,
           headerText:header.text,
+          headerLines:header.lines,
           headerConfidence:header.confidence,
           baseConfidence:Number(baseConfidence||0)
         }));
@@ -644,7 +656,9 @@ async function processJob(job){
             blueLineCount:blue.blueLineCount,
             optionDecisions:blue.decisions,
             blueConfidence:blue.confidence,
+            equipmentName,
             headerText:header.text,
+            headerLines:header.lines,
             headerConfidence:header.confidence,
             baseConfidence:Number(baseConfidence||0),
             slotCandidates:slotHits,
