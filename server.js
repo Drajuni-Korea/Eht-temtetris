@@ -1,3 +1,4 @@
+import { abyssUniques, matchEquipment, detectSpecial, mergeEquipmentOptions } from './equipment-db.js';
 import express from 'express';
 import multer from 'multer';
 import { createWorker } from 'tesseract.js';
@@ -133,55 +134,6 @@ const slotMap = [
   ['necklace', /목걸이류|목걸이/],
   ['weapon', /무기류|검|활|지팡이|도끼/]
 ];
-
-const specialBySlot = {
-  weapon: [['field','필드무기'],['colo','콜로무기'],['world','월드보스무기'],['devilWeapon','대악마무기']],
-  helmet: [
-    ['normal','일반'],['juggernaut','저거너트 헬름'],['blueHelm','콜로 블루 투구'],
-    ['pumpkin','호박 머리 모자'],['insight','통찰의 투구'],['juggernautUnique','저거너트 헬름']
-  ],
-  gloves: [
-    ['normal','일반'],['blood','블러디 피스트'],['trueBlood','진 블러디 피스트'],
-    ['hecate','헤카테의 장갑']
-  ],
-  boots: [
-    ['normal','일반'],['gale','질풍의 경갑'],['trueGale','진 질풍의 경갑'],
-    ['indomitable','불굴의 경갑']
-  ],
-  necklace: [
-    ['normal','일반'],['hades','하데스의 목걸이'],['trueHades','진 하데스의 목걸이'],
-    ['guard','경비대장의 목걸이'],['dragon','용의 가호 목걸이']
-  ],
-  ring: [
-    ['normal','일반'],['cyclone','싸이클론 링'],['trueCyclone','진 싸이클론 링'],
-    ['trinity','트리니티 링'],['sacrifice','수호자의 희생 반지']
-  ],
-  belt: [
-    ['normal','일반'],['thunder','뇌룡의 허리띠'],['trueThunder','진 뇌룡의 허리띠'],
-    ['alchemy','연금술사의 벨트'],['sylph','실프의 허리띠']
-  ],
-  armor: [
-    ['normal','일반'],['frost','서리거인의 흉갑'],['trueFrost','진 서리거인의 흉갑'],
-    ['absorb','흡수의 갑옷'],['masochist','피학자의 갑옷']
-  ]
-};
-
-const specialAliases = {
-  blood:['블러디피스트','블러드피스트'],
-  trueBlood:['진블러디피스트','진블러드피스트'],
-  pumpkin:['호박머리모자'],
-  insight:['통찰의투구'],
-  hecate:['헤카테의장갑'],
-  indomitable:['불굴의경갑'],
-  juggernautUnique:['저거너트헬름'],
-  sylph:['실프의허리띠']
-};
-
-const fixedSpecial = {
-  gale: ['movespd'],
-  trueGale: ['movespd'],
-  juggernaut: ['hp']
-};
 
 function normalizeOCR(s='') {
   return s.replace(/\s+/g, ' ').replace(/[|]/g, ' ');
@@ -436,28 +388,6 @@ async function recognizeBlueOptions(worker,filePath){
   };
 }
 
-function detectSpecial(txt, slot) {
-  const list = specialBySlot[slot] || [];
-  const noSpace = txt.replace(/\s+/g, '');
-  for (const [key, label] of list) {
-    if (key === 'normal') continue;
-    const labels=[label.replace(/\s+/g,''),...(specialAliases[key]||[])];
-    if(labels.some(x=>noSpace.includes(x))) return key;
-  }
-  if(slot==='belt'){
-    if(/진\s*뇌룡|뇌룡.*진/.test(txt)) return 'trueThunder';
-    if(/뇌룡/.test(txt)) return 'thunder';
-    if(/연금술사/.test(txt)) return 'alchemy';
-  }
-  if (slot === 'weapon') {
-    if (/월드\s*보스/.test(txt)) return 'world';
-    if (/콜로/.test(txt)) return 'colo';
-    if (/대악마/.test(txt)) return 'devilWeapon';
-    return 'field';
-  }
-  return 'normal';
-}
-
 function rgbToHsv(r,g,b){
   r/=255; g/=255; b/=255;
   const max=Math.max(r,g,b), min=Math.min(r,g,b), d=max-min;
@@ -623,19 +553,23 @@ async function processJob(job){
         if(/태초/.test(combinedText)) tierHits.push('origin');
         const rangeTier=inferTierFromOptionRanges(blue.blueLines);
         if(rangeTier && !tierHits.includes(rangeTier)) tierHits.push(rangeTier);
-        const tier = tierHits.length===1 ? tierHits[0] : (rangeTier || null);
+        let tier = tierHits.length===1 ? tierHits[0] : (rangeTier || null);
 
         const slotHits = [];
         for(const [key, re] of slotMap){
           if(re.test(combinedText) && !slotHits.includes(key)) slotHits.push(key);
         }
-        const slot = slotHits.length===1 ? slotHits[0] : null;
+        let slot = slotHits.length===1 ? slotHits[0] : null;
 
         const specialText = normalizeOCR((equipmentName||'')+' '+header.text+' '+combinedText);
-        const special = slot ? detectSpecial(specialText, slot) : null;
-        const fixed = fixedSpecial[special] || [];
-        const opts = [...new Set([...fixed, ...found])];
-        const grade = cGrade || textGrade(txt, tier);
+        // Exact names outrank incidental slot/tier words in the effect description.
+        const named = matchEquipment(equipmentName) || matchEquipment(header.text) || matchEquipment(combinedText);
+        if (named) slot = named.slot;
+        if (named?.tier) tier = named.tier;
+        const special = named?.special || (slot ? detectSpecial(specialText, slot) : null);
+        if (abyssUniques[special]) tier = abyssUniques[special].tier;
+        const opts = mergeEquipmentOptions(special, found);
+        const grade = abyssUniques[special]?.grade || cGrade || textGrade(txt, tier);
 
         // 자동등록은 보수적으로:
         // - 부위 1개 확정
@@ -767,8 +701,9 @@ app.get('/api/jobs/:id', async (req,res)=>{
 
 app.get('/api/health', (req,res)=>res.json({ ok:true }));
 
+app.get('/equipment-db.js', (req,res)=>res.sendFile(path.join(__dirname,'equipment-db.js')));
 app.get('/', (req,res)=>res.sendFile(path.join(__dirname,'index.html')));
 app.get('*', (req,res)=>res.sendFile(path.join(__dirname,'index.html')));
 
 const port = process.env.PORT || 3000;
-app.listen(port, ()=>console.log(`EHT OCR server listening on ${port}`));
+const server = app.listen(port, ()=>console.log(`EHT OCR server listening on ${server.address().port}`));
